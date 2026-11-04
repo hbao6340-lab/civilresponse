@@ -6,10 +6,18 @@
  * This module is a thin, typed accessor so server code has a single place to
  * check credentials and degrade safely when they are missing.
  *
- * Each value is read lazily (function call, not module top-level) so the
- * client bundle sees whatever environment Next inlines at build time —
- * evaluating once at import would freeze first-load emptiness on first
- * hydration (a source of the "Backend not configured" sign-in dead-end).
+ * IMPORTANT — static access only:
+ * Next.js/Turbopack inlines `process.env.NEXT_PUBLIC_*` at BUILD TIME by
+ * statically replacing direct member access such as
+ * `process.env.NEXT_PUBLIC_SUPABASE_URL`.
+ * Dynamic access via `process.env[name]` is NOT replaced in client bundles:
+ * it falls through to a `process` shim (a timer polyfill) whose `env` is
+ * `undefined`, so every browser read returns `null` and sign-in always fails
+ * while the server (real Node runtime) reads the vars correctly. That was the
+ * production "Supabase is not configured" sign-in bug.
+ *
+ * Therefore: never use `process.env[name]` for NEXT_PUBLIC_* values.
+ * Read each value via the statically-written expressions below.
  */
 
 type Mode = "production" | "staging" | "development";
@@ -24,8 +32,7 @@ export interface EnvShape {
   mapTilesUrl: string;
 }
 
-function read(name: string): string | null {
-  const v = process.env[name];
+function clean(v: string | undefined): string | null {
   if (v === undefined) return null;
   const trimmed = v.trim();
   return trimmed === "" ? null : trimmed;
@@ -34,17 +41,19 @@ function read(name: string): string | null {
 const NODE_ENV = (process.env.NODE_ENV ?? "development") as Mode;
 
 function snapshot(): EnvShape {
+  // Every NEXT_PUBLIC_* access below is a literal property access so
+  // Next.js can inline it into the client bundle at build time.
+  const supabaseUrl = clean(process.env.NEXT_PUBLIC_SUPABASE_URL);
+  const supabaseAnonKey = clean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   return {
     mode: NODE_ENV,
-    siteUrl: read("NEXT_PUBLIC_SITE_URL") ?? "http://localhost:3000",
-    supabaseUrl: read("NEXT_PUBLIC_SUPABASE_URL"),
-    supabaseAnonKey: read("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
-    supabaseServiceRoleKey: read("SUPABASE_SERVICE_ROLE_KEY"),
-    isSupabaseConfigured: Boolean(
-      read("NEXT_PUBLIC_SUPABASE_URL") && read("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
-    ),
+    siteUrl: clean(process.env.NEXT_PUBLIC_SITE_URL) ?? "http://localhost:3000",
+    supabaseUrl,
+    supabaseAnonKey,
+    supabaseServiceRoleKey: clean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+    isSupabaseConfigured: Boolean(supabaseUrl && supabaseAnonKey),
     mapTilesUrl:
-      read("NEXT_PUBLIC_MAP_TILES_URL") ??
+      clean(process.env.NEXT_PUBLIC_MAP_TILES_URL) ??
       "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   };
 }
@@ -61,7 +70,9 @@ export const env: EnvShape = new Proxy({} as EnvShape, {
 }) as EnvShape;
 
 export function requireEnv(name: string): string {
-  const v = read(name);
+  // NOTE: `name` is only used for the error message here; the actual reads
+  // for known keys are the static expressions in snapshot() above.
+  const v = clean((process.env as Record<string, string | undefined>)[name]);
   if (!v) throw new Error(`Missing required environment variable: ${name}`);
   return v;
 }
