@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
-import { env } from "@/lib/env";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -19,7 +18,15 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      if (!env.isSupabaseConfigured) {
+      // Server-side authoritative check (fresh per request, not inlined into
+      // the client bundle at build time). This is the source of truth for
+      // whether Supabase is configured for the deployed build.
+      const probe = await fetch("/api/v1/health");
+      const probeJson = (await probe.json()) as {
+        success: boolean;
+        data?: { configured: boolean };
+      };
+      if (!probeJson.success || !probeJson.data?.configured) {
         setError("Backend not configured. See README.md “Running locally”.");
         setBusy(false);
         return;
