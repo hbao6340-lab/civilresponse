@@ -27,11 +27,15 @@ export async function GET(
 
   // Anonymous-citizen path: token-based definer RPC (works even when
   // reporter_user_id is NULL, which RLS would never return).
+  // NOTE: a PostgREST/Supabase error here (e.g. P0001 from the RPC, or a
+  // missing function) must surface as 400/404, never 401 — 401 is reserved
+  // for "no credential at all", which is the early-return above.
   if (token) {
     const { data, error: err } = await supabase.rpc("track_incident_by_token", {
       p_reference: reference,
       p_token_hash: sha256(token),
     });
+    if (err) return error(err.message ?? "Invalid tracking link.", 400, "invalid_token");
     const row = Array.isArray(data) ? data[0] : null;
     if (err || !row) {
       return error("Incident not found or invalid token.", 404, "not_found");
