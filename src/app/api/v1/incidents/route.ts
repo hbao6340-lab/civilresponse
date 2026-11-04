@@ -45,12 +45,19 @@ export async function POST(request: Request) {
     contact_details: input.contactDetails ?? null,
   };
 
+  const supabase = await createClient();
+  let incidentId: string | null = null;
+
   if (admin) {
-    const { error: insertError } = await admin.from("incidents").insert(row);
+    const { data, error: insertError } = await admin
+      .from("incidents")
+      .insert(row)
+      .select("id")
+      .single();
     if (insertError) return error("Could not record your report.", 500, "db_error");
+    incidentId = String(data.id);
   } else {
-    const supabase = await createClient();
-    const { error: insertError } = await supabase.rpc("submit_incident", {
+    const { data, error: insertError } = await supabase.rpc("submit_incident", {
       p_category: input.category,
       p_description: input.description,
       p_latitude: input.latitude,
@@ -61,21 +68,25 @@ export async function POST(request: Request) {
       p_token_hash: trackingTokenHash,
     });
     if (insertError) return error("Could not record your report.", 500, "db_error");
+    if (typeof data === "string") incidentId = data;
   }
 
-  // Notify nearby eligible responders (Phase 4 dispatch). Recorded as
-  // pending assignments; realtime + push delivery is best-effort.
-  try {
-    const supabase = await createClient();
-    const { data: nearby } = await supabase.rpc("find_nearby_responders", {
-      incident_latitude: input.latitude,
-      incident_longitude: input.longitude,
-      search_radius_meters: 3000,
-      incident_category: input.category,
-    });
-    void nearby;
-  } catch {
-    // Non-blocking: incident is already recorded.
+  // Dispatch: create pending assignments for eligible nearby responders and
+  // in-app notifications. Best-effort — the report is already recorded.
+  if (incidentId) {
+    try {
+      const dispatchClient = admin ?? supabase;
+      await dispatchClient.rpc("dispatch_incident", {
+        p_incident_id: incidentId,
+        p_latitude: input.latitude,
+        p_longitude: input.longitude,
+        p_radius_meters: 3000,
+        p_max_responders: 10,
+      });
+    } catch {
+      // Dispatch failure must never fail the citizen's submission; the
+      // incident stays NEW and can be dispatched later (admin: re-run RPC).
+    }
   }
 
   return created({ publicReference, trackingToken });

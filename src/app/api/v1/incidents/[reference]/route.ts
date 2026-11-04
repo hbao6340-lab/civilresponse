@@ -24,18 +24,42 @@ export async function GET(
   }
 
   const supabase = await createClient();
-  let query = supabase
+
+  // Anonymous-citizen path: token-based definer RPC (works even when
+  // reporter_user_id is NULL, which RLS would never return).
+  if (token) {
+    const { data, error: err } = await supabase.rpc("track_incident_by_token", {
+      p_reference: reference,
+      p_token_hash: sha256(token),
+    });
+    const row = Array.isArray(data) ? data[0] : null;
+    if (err || !row) {
+      return error("Incident not found or invalid token.", 404, "not_found");
+    }
+    return ok({
+      id: row.id,
+      publicReference: row.public_reference,
+      category: row.incident_category,
+      status: row.status,
+      priority: row.priority,
+      address: row.address,
+      affectedPersons: row.affected_persons,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      closedAt: row.closed_at,
+    });
+  }
+
+  // Authenticated path: own reports or staff-visible via RLS.
+  const { data, error: err } = await supabase
     .from("incidents")
     .select(
       "id,public_reference,incident_category,status,priority,address,affected_persons,created_at,updated_at,closed_at",
     )
-    .eq("public_reference", reference);
-
-  if (token) query = query.eq("access_token_hash", sha256(token));
-  else if (user) query = query.eq("reporter_user_id", user.id);
-
-  const { data, error: err } = await query.single();
-  if (err || !data) return error("Incident not found or invalid token.", 404, "not_found");
+    .eq("public_reference", reference)
+    .eq("reporter_user_id", user!.id)
+    .single();
+  if (err || !data) return error("Incident not found.", 404, "not_found");
 
   return ok({
     id: data.id,
