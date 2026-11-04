@@ -2,6 +2,7 @@
 
 import { use, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
 import type { IncidentRecord } from "@/lib/types";
@@ -19,6 +20,7 @@ export default function IncidentTrackPage({
   params: Promise<{ reference: string; token?: string }>;
 }) {
   const { reference, token: pathToken } = use(params);
+  const router = useRouter();
   const [manual, setManual] = useState("");
   const [urlToken] = useState<string | null>(() =>
     typeof window === "undefined"
@@ -72,9 +74,9 @@ export default function IncidentTrackPage({
             e.preventDefault();
             const tok = manual.trim();
             if (tok) {
-              window.location.href = `/incident/${encodeURIComponent(
-                reference,
-              )}/${encodeURIComponent(tok)}`;
+              router.push(
+                `/incident/${encodeURIComponent(reference)}/${encodeURIComponent(tok)}`,
+              );
             }
           }}
         >
