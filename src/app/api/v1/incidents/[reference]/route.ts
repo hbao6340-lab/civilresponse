@@ -1,67 +1,40 @@
 import { createClient } from "@/lib/supabase/server";
 import { env } from "@/lib/env";
 import { ok, error, notConfigured } from "@/lib/api";
-import { sha256 } from "@/lib/incident-service";
 import { getSessionUser } from "@/lib/auth";
 
 /**
  * GET /api/v1/incidents/[reference]
- * Requires the secret tracking token (?t=...) or an authorised session.
+ * Authenticated-only path (session). Anonymous citizens must use
+ * /api/v1/incidents/[reference]/[token] — the token-in-path shape avoids
+ * CDN/WAF query-string interception.
  */
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ reference: string }> },
 ) {
   const { reference } = await params;
-  const token = new URL(request.url).searchParams.get("t");
   const user = await getSessionUser().catch(() => null);
 
   if (!env.isSupabaseConfigured) {
     return notConfigured("Incident tracking requires a configured backend.");
   }
-  if (!token && !user) {
-    return error("A tracking token is required.", 401, "unauthorized");
+  if (!user) {
+    return error(
+      "Authentication required. Anonymous tracking uses the token path.",
+      401,
+      "unauthorized",
+    );
   }
 
   const supabase = await createClient();
-
-  // Anonymous-citizen path: token-based definer RPC (works even when
-  // reporter_user_id is NULL, which RLS would never return).
-  // NOTE: a PostgREST/Supabase error here (e.g. P0001 from the RPC, or a
-  // missing function) must surface as 400/404, never 401 — 401 is reserved
-  // for "no credential at all", which is the early-return above.
-  if (token) {
-    const { data, error: err } = await supabase.rpc("track_incident_by_token", {
-      p_reference: reference,
-      p_token_hash: sha256(token),
-    });
-    if (err) return error(err.message ?? "Invalid tracking link.", 400, "invalid_token");
-    const row = Array.isArray(data) ? data[0] : null;
-    if (err || !row) {
-      return error("Incident not found or invalid token.", 404, "not_found");
-    }
-    return ok({
-      id: row.id,
-      publicReference: row.public_reference,
-      category: row.incident_category,
-      status: row.status,
-      priority: row.priority,
-      address: row.address,
-      affectedPersons: row.affected_persons,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      closedAt: row.closed_at,
-    });
-  }
-
-  // Authenticated path: own reports or staff-visible via RLS.
   const { data, error: err } = await supabase
     .from("incidents")
     .select(
       "id,public_reference,incident_category,status,priority,address,affected_persons,created_at,updated_at,closed_at",
     )
     .eq("public_reference", reference)
-    .eq("reporter_user_id", user!.id)
+    .eq("reporter_user_id", user.id)
     .single();
   if (err || !data) return error("Incident not found.", 404, "not_found");
 

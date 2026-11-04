@@ -10,14 +10,15 @@ import { INCIDENT_CATEGORY_LABEL } from "@/lib/constants";
 
 /**
  * Secure incident tracking page.
- * Requires BOTH the public reference and the secret tracking token.
+ * The tracking token travels in the URL path (/incident/[ref]/[token])
+ * so it is never dropped by CDN/WAF query-string interception.
  */
 export default function IncidentTrackPage({
   params,
 }: {
-  params: Promise<{ reference: string }>;
+  params: Promise<{ reference: string; token?: string }>;
 }) {
-  const { reference } = use(params);
+  const { reference, token: pathToken } = use(params);
   const [manual, setManual] = useState("");
   const [urlToken] = useState<string | null>(() =>
     typeof window === "undefined"
@@ -25,16 +26,17 @@ export default function IncidentTrackPage({
       : new URLSearchParams(window.location.search).get("t"),
   );
 
-  // No token in the URL: the manual entry is authoritative and effect-free.
-  const hasUrlToken = urlToken !== null;
-  const token = hasUrlToken ? urlToken : null;
+  // The token travels in the URL path (/incident/[ref]/[token]) so it
+  // survives CDN/WAF rules that drop `?t=…` query strings. Legacy `?t=`
+  // links still work via the fallback below.
+  const token = pathToken ?? urlToken;
 
   const query = useQuery({
     queryKey: ["incident", reference, token],
     enabled: token !== null,
     queryFn: async (): Promise<IncidentRecord> => {
       const res = await fetch(
-        `/api/v1/incidents/${encodeURIComponent(reference)}?t=${encodeURIComponent(token ?? "")}`,
+        `/api/v1/incidents/${encodeURIComponent(reference)}/${encodeURIComponent(token ?? "")}`,
       );
       const json = (await res.json()) as {
         success: boolean;
@@ -70,7 +72,9 @@ export default function IncidentTrackPage({
             e.preventDefault();
             const tok = manual.trim();
             if (tok) {
-              window.location.search = `?t=${encodeURIComponent(tok)}`;
+              window.location.href = `/incident/${encodeURIComponent(
+                reference,
+              )}/${encodeURIComponent(tok)}`;
             }
           }}
         >

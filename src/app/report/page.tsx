@@ -81,7 +81,7 @@ export default function ReportPage() {
       }
       const { publicReference, trackingToken } = json.data;
       router.push(
-        `/incident/${encodeURIComponent(publicReference)}?t=${encodeURIComponent(trackingToken)}`,
+        `/incident/${encodeURIComponent(publicReference)}/${encodeURIComponent(trackingToken)}`,
       );
     } catch {
       setError("Network error. If this is urgent, call 113 / 114 / 115 now.");
