@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Menu, ShieldAlert, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SITE, EMERGENCY_NUMBERS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
 
 const links = [
   { href: "/", label: "Home" },
@@ -16,9 +17,65 @@ const links = [
   { href: "/become-a-responder", label: "Become a responder" },
 ];
 
+interface SessionState {
+  dashboardPath: string | null;
+  primaryLabel: string | null;
+}
+
 export function SiteHeader() {
   const pathname = usePathname();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [session, setSession] = useState<SessionState | null>(null);
+
+  // Resolve signed-in state via the authoritative /api/v1/auth/me endpoint.
+  // 401 (signed out) or 503 (backend not configured) → show Sign in.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/v1/auth/me", { cache: "no-store" });
+        if (!res.ok) {
+          if (!cancelled) setSession({ dashboardPath: null, primaryLabel: null });
+          return;
+        }
+        const json = (await res.json()) as {
+          success: boolean;
+          data?: { dashboardPath?: string; primaryLabel?: string };
+        };
+        if (!cancelled && json.success && json.data?.dashboardPath) {
+          setSession({
+            dashboardPath: json.data.dashboardPath,
+            primaryLabel: json.data.primaryLabel ?? null,
+          });
+        } else if (!cancelled) {
+          setSession({ dashboardPath: null, primaryLabel: null });
+        }
+      } catch {
+        if (!cancelled) setSession({ dashboardPath: null, primaryLabel: null });
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
+  const signOut = async () => {
+    try {
+      const supabase = createClient();
+      await supabase.auth.signOut();
+    } catch {
+      // Best-effort: still leave the protected area.
+    }
+    setSession({ dashboardPath: null, primaryLabel: null });
+    setOpen(false);
+    router.push("/");
+    router.refresh();
+  };
+
+  const signedIn = Boolean(session?.dashboardPath);
+  const dashboardHref = session?.dashboardPath ?? "/dashboard";
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
@@ -53,12 +110,31 @@ export function SiteHeader() {
               {l.label}
             </Link>
           ))}
-          <Link
-            href="/login"
-            className="ml-2 rounded-md bg-[#0b2545] px-4 py-2 text-sm font-semibold text-white hover:bg-[#13315c]"
-          >
-            Sign in
-          </Link>
+          {signedIn ? (
+            <>
+              <Link
+                href={dashboardHref}
+                className="ml-2 rounded-md bg-[#0b2545] px-4 py-2 text-sm font-semibold text-white hover:bg-[#13315c]"
+                title={session?.primaryLabel ?? undefined}
+              >
+                Dashboard
+              </Link>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <Link
+              href="/login"
+              className="ml-2 rounded-md bg-[#0b2545] px-4 py-2 text-sm font-semibold text-white hover:bg-[#13315c]"
+            >
+              Sign in
+            </Link>
+          )}
         </nav>
 
         <button
@@ -84,13 +160,32 @@ export function SiteHeader() {
               {l.label}
             </Link>
           ))}
-          <Link
-            href="/login"
-            className="mt-1 block rounded-md bg-[#0b2545] px-4 py-2 text-center text-sm font-semibold text-white"
-            onClick={() => setOpen(false)}
-          >
-            Sign in
-          </Link>
+          {signedIn ? (
+            <>
+              <Link
+                href={dashboardHref}
+                className="mt-1 block rounded-md bg-[#0b2545] px-4 py-2 text-center text-sm font-semibold text-white"
+                onClick={() => setOpen(false)}
+              >
+                Dashboard
+              </Link>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="mt-1 block w-full rounded-md border border-slate-300 px-4 py-2 text-center text-sm font-semibold text-slate-700"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <Link
+              href="/login"
+              className="mt-1 block rounded-md bg-[#0b2545] px-4 py-2 text-center text-sm font-semibold text-white"
+              onClick={() => setOpen(false)}
+            >
+              Sign in
+            </Link>
+          )}
         </nav>
       )}
 

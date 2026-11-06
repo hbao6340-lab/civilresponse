@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { env } from "@/lib/env";
 
-const PROTECTED = ["/responder", "/admin"];
+const PROTECTED = ["/responder", "/admin", "/dashboard"];
 
 /**
  * Next.js 16: `proxy` (formerly middleware) runs on the Node.js runtime.

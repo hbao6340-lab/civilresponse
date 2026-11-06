@@ -15,12 +15,22 @@ interface Row {
 }
 
 export default function AdminRespondersPage() {
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["admin-responders"],
     queryFn: async (): Promise<Row[]> => {
       const res = await fetch("/api/v1/admin/responders");
-      const json = (await res.json()) as { data: { responders: Row[] } };
-      return json.data.responders;
+      const json = (await res.json()) as {
+        success: boolean;
+        data?: { responders: Row[] };
+        error?: { message: string };
+      };
+      if (res.status === 403) {
+        throw new Error("Insufficient permissions — your role does not include responder review.");
+      }
+      if (!res.ok || !json.success) {
+        throw new Error(json.error?.message ?? "Could not load responders.");
+      }
+      return json.data?.responders ?? [];
     },
   });
 
@@ -40,6 +50,11 @@ export default function AdminRespondersPage() {
         <CardHeader title="Verification queue" description="Approve, reject, or suspend. Every decision is audit-logged." />
         <CardBody>
           {isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+          {error && (
+            <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              {(error as Error).message}
+            </p>
+          )}
           {data?.length === 0 && <p className="text-sm text-slate-500">No responders yet.</p>}
           <ul className="space-y-3">
             {data?.map((r) => (

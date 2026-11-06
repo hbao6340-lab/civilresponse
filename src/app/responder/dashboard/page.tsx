@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
@@ -14,10 +14,23 @@ export default function ResponderDashboardPage() {
   const [fix, setFix] = useState<PositionFix | null>(null);
   const [lastSent, setLastSent] = useState<number | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [meInfo, setMeInfo] = useState<{
+    isPrivileged?: boolean;
+    primaryLabel?: string;
+  } | null>(null);
   const lastSentRef = useRef(0);
   const trackerStopRef = useRef<(() => void) | null>(null);
 
-  const { data: stateData } = useQuery({
+  useEffect(() => {
+    fetch("/api/v1/auth/me")
+      .then((r) => r.json() as Promise<{ success: boolean; data?: { isPrivileged?: boolean; primaryLabel?: string } }>)
+      .then((json) => {
+        if (json.success && json.data) setMeInfo(json.data);
+      })
+      .catch(() => setMeInfo(null));
+  }, []);
+
+  const { data: stateData, isLoading: stateLoading } = useQuery({
     queryKey: ["responder-state"],
     queryFn: async () => {
       const res = await fetch("/api/v1/responders/me");
@@ -39,6 +52,12 @@ export default function ResponderDashboardPage() {
   // setQueryData below.
   const serverDuty = stateData?.data?.dutyMode ?? false;
   const duty = dutyOverride ?? serverDuty;
+  const verificationStatus = stateData?.data?.verificationStatus as string | undefined;
+  const isVerified = verificationStatus === "verified";
+  // Staff without a responder profile: show control-center guidance instead
+  // of a broken duty toggle (no responders row → /responders/me is 404).
+  const isStaffWithoutProfile =
+    Boolean(meInfo?.isPrivileged) && !stateLoading && stateData == null;
 
   const sendFix = async (f: PositionFix) => {
     setFix(f);
@@ -120,53 +139,118 @@ export default function ResponderDashboardPage() {
         </p>
       </div>
 
-      <Card className={duty ? "border-emerald-300" : ""}>
-        <CardBody>
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold">Duty mode</p>
-              <p className="text-sm text-slate-600">
-                {duty
-                  ? "On duty — GPS sharing (if consented) and incident alerts are live."
-                  : "Off duty — no GPS is collected and you will not receive alerts."}
+      {meInfo?.isPrivileged && (
+        <Card className="border-blue-200">
+          <CardBody>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm text-slate-700">
+                <span className="font-semibold">
+                  {meInfo.primaryLabel ?? "Staff"} access — verification bypassed.
+                </span>{" "}
+                {isStaffWithoutProfile
+                  ? "You are viewing the responder area as staff. Your control center holds the verification queue and role tools."
+                  : isVerified
+                    ? "Your verified responder profile is active in addition to staff tools."
+                    : "Staff tools live in the control center; responder duty still requires a verified responder profile."}
               </p>
+              <a
+                href="/admin/dashboard"
+                className="rounded-md bg-[#0b2545] px-4 py-2 text-sm font-semibold text-white hover:bg-[#13315c]"
+              >
+                Open control center
+              </a>
             </div>
-            <Badge tone={duty ? "green" : "grey"}>{duty ? "ON DUTY" : "OFF DUTY"}</Badge>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button
-              variant={duty ? "danger" : "primary"}
-              onClick={() => void toggleDuty(!duty)}
-            >
-              {duty ? "Go off duty" : "Go on duty"}
-            </Button>
-          </div>
-        </CardBody>
-      </Card>
+          </CardBody>
+        </Card>
+      )}
 
-      <Card>
-        <CardHeader
-          title="Live GPS"
-          description={`Moving: ~${GPS.movingIntervalMs / 1000}s · Stationary: ~${GPS.stationaryIntervalMs / 1000}s · Stale after ${GPS.maxFreshMs / 1000}s. Browser background tracking is NOT offered — closing the browser stops sharing.`}
-        />
-        <CardBody>
-          {gpsError && <p className="mb-2 text-sm text-red-700">{gpsError}</p>}
-          {fix ? (
-            <dl className="grid gap-2 text-sm sm:grid-cols-2">
-              <div><dt className="text-slate-500">Position</dt><dd>{fix.latitude.toFixed(5)}, {fix.longitude.toFixed(5)}</dd></div>
-              <div><dt className="text-slate-500">Accuracy</dt><dd>{fix.accuracyMeters ? `±${Math.round(fix.accuracyMeters)} m` : "—"}</dd></div>
-              <div><dt className="text-slate-500">Last fix</dt><dd>{new Date(fix.timestamp).toLocaleTimeString()}</dd></div>
-              <div><dt className="text-slate-500">Last sent</dt><dd>{lastSent ? new Date(lastSent).toLocaleTimeString() : "—"}</dd></div>
-            </dl>
-          ) : (
-            <p className="text-sm text-slate-500">
-              {duty
-                ? "Waiting for the first GPS fix… grant location permission if prompted."
-                : "GPS is off. Go on duty and grant location access to start sharing."}
+      {!meInfo?.isPrivileged && verificationStatus && !isVerified && (
+        <Card className="border-orange-200">
+          <CardBody>
+            <p className="text-sm text-slate-700">
+              <span className="font-semibold">Verification {verificationStatus}.</span>{" "}
+              You cannot go on duty until a verification officer approves your
+              documents.{" "}
+              <a className="underline" href="/responder/verification">
+                Complete verification →
+              </a>
             </p>
-          )}
-        </CardBody>
-      </Card>
+          </CardBody>
+        </Card>
+      )}
+
+      {isStaffWithoutProfile ? (
+        <Card>
+          <CardHeader
+            title="Responder duty is unavailable for this account"
+            description="This staff account has no responder profile, so duty mode, GPS, and assignments do not apply. Use the control center instead."
+          />
+          <CardBody>
+            <a
+              href="/admin/dashboard"
+              className="inline-block rounded-md bg-[#0b2545] px-4 py-2 text-sm font-semibold text-white hover:bg-[#13315c]"
+            >
+              Go to control center
+            </a>
+          </CardBody>
+        </Card>
+      ) : (
+        <>
+          <Card className={duty ? "border-emerald-300" : ""}>
+            <CardBody>
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold">Duty mode</p>
+                  <p className="text-sm text-slate-600">
+                    {duty
+                      ? "On duty — GPS sharing (if consented) and incident alerts are live."
+                      : "Off duty — no GPS is collected and you will not receive alerts."}
+                  </p>
+                </div>
+                <Badge tone={duty ? "green" : "grey"}>{duty ? "ON DUTY" : "OFF DUTY"}</Badge>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant={duty ? "danger" : "primary"}
+                  disabled={Boolean(meInfo?.isPrivileged && !isVerified)}
+                  onClick={() => void toggleDuty(!duty)}
+                >
+                  {duty ? "Go off duty" : "Go on duty"}
+                </Button>
+              </div>
+              {Boolean(meInfo?.isPrivileged && !isVerified) && (
+                <p className="mt-2 text-xs text-slate-500">
+                  Staff advisory: responder duty still requires a verified responder profile. See the control center for staff tools.
+                </p>
+              )}
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="Live GPS"
+              description={`Moving: ~${GPS.movingIntervalMs / 1000}s · Stationary: ~${GPS.stationaryIntervalMs / 1000}s · Stale after ${GPS.maxFreshMs / 1000}s. Browser background tracking is NOT offered — closing the browser stops sharing.`}
+            />
+            <CardBody>
+              {gpsError && <p className="mb-2 text-sm text-red-700">{gpsError}</p>}
+              {fix ? (
+                <dl className="grid gap-2 text-sm sm:grid-cols-2">
+                  <div><dt className="text-slate-500">Position</dt><dd>{fix.latitude.toFixed(5)}, {fix.longitude.toFixed(5)}</dd></div>
+                  <div><dt className="text-slate-500">Accuracy</dt><dd>{fix.accuracyMeters ? `±${Math.round(fix.accuracyMeters)} m` : "—"}</dd></div>
+                  <div><dt className="text-slate-500">Last fix</dt><dd>{new Date(fix.timestamp).toLocaleTimeString()}</dd></div>
+                  <div><dt className="text-slate-500">Last sent</dt><dd>{lastSent ? new Date(lastSent).toLocaleTimeString() : "—"}</dd></div>
+                </dl>
+              ) : (
+                <p className="text-sm text-slate-500">
+                  {duty
+                    ? "Waiting for the first GPS fix… grant location permission if prompted."
+                    : "GPS is off. Go on duty and grant location access to start sharing."}
+                </p>
+              )}
+            </CardBody>
+          </Card>
+        </>
+      )}
 
       <Card>
         <CardHeader title="Availability" description="Set your state so dispatch can rank you correctly." />
