@@ -28,6 +28,26 @@ export interface PublicResponderMarker {
   isDemo?: boolean;
 }
 
+/**
+ * Dashboard incident marker (authorised viewers only).
+ * Coordinates are exact operational locations (never exposed on the public map).
+ */
+export interface IncidentMarker {
+  id: string;
+  publicReference: string;
+  category: IncidentCategory;
+  status: IncidentStatus;
+  priority: "low" | "medium" | "high" | "critical";
+  address: string | null;
+  affectedPersons: number | null;
+  verificationStatus: string;
+  createdAt: string;
+  updatedAt: string;
+  lat: number;
+  lng: number;
+  isDemo?: boolean;
+}
+
 export interface IncidentRecord {
   id: string;
   publicReference: string;

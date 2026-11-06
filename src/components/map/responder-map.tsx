@@ -6,14 +6,60 @@ import { SITE, EMERGENCY_NUMBERS } from "@/lib/constants";
 import { env } from "@/lib/env";
 
 /**
- * MapLibre GL responder map (privacy-protected coordinates only).
- * The public API returns jittered positions; exact GPS never reaches the browser.
+ * Public responder map — responders only (never incidents).
+ *
+ * Live-update friendly: the MapLibre map is created once; subsequent
+ * `markers` prop changes update the GeoJSON source in place (no remount),
+ * so polling feeds animate without losing pan/zoom. Coordinates are the
+ * privacy-protected approximations from /api/v1/map/responders.
  */
+
+const SOURCE_ID = "responders-src";
+const LAYER_ID = "responders-circle";
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function toFeatureCollection(markers: PublicResponderMarker[]) {
+  return {
+    type: "FeatureCollection" as const,
+    features: markers
+      .filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lng))
+      .map((m) => ({
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [m.lng, m.lat] },
+        properties: {
+          id: m.id,
+          displayName: m.displayName,
+          availabilityStatus: m.availabilityStatus,
+          distance: m.distanceMeters,
+          isDemo: m.isDemo ? true : false,
+        },
+      })),
+  };
+}
+
 export function ResponderMap({ markers }: { markers: PublicResponderMarker[] }) {
   const ref = useRef<HTMLDivElement>(null);
+  const markersRef = useRef(markers);
+  const updateRef = useRef<(() => void) | null>(null);
 
+  // Keep the latest markers available to the long-lived map closure.
+  useEffect(() => {
+    markersRef.current = markers;
+  }, [markers]);
+
+  // Create the map once; layers initialise on style load, then updates flow
+  // through the second effect without remounting.
   useEffect(() => {
     let map: import("maplibre-gl").Map | null = null;
+    let popup: import("maplibre-gl").Popup | null = null;
     let cancelled = false;
 
     (async () => {
@@ -49,38 +95,97 @@ export function ResponderMap({ markers }: { markers: PublicResponderMarker[] }) 
         "top-right",
       );
 
-      const colorFor = (status: string) =>
-        status === "available"
-          ? "#16a34a"
-          : status === "busy" || status === "responding"
-            ? "#f97316"
-            : status === "on_scene"
-              ? "#2563eb"
-              : "#94a3b8";
+      const updateSource = () => {
+        const source = m.getSource(SOURCE_ID) as
+          | import("maplibre-gl").GeoJSONSource
+          | undefined;
+        source?.setData(toFeatureCollection(markersRef.current) as never);
+      };
+      updateRef.current = updateSource;
 
-      for (const marker of markers) {
-        const el = document.createElement("div");
-        el.style.cssText = `width:16px;height:16px;border-radius:9999px;background:${colorFor(marker.availabilityStatus)};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.35);`;
-        el.title = marker.displayName;
-        new maplibregl.Marker({ element: el })
-          .setLngLat([marker.lng, marker.lat])
-          .setPopup(
-            new maplibregl.Popup({ offset: 12 }).setHTML(
-              `<strong>${marker.displayName}</strong><br/>Status: ${marker.availabilityStatus}` +
-                (marker.distanceMeters !== undefined
-                  ? `<br/>~${(marker.distanceMeters / 1000).toFixed(1)} km away (approx.)`
-                  : "") +
+      const initLayers = () => {
+        if (cancelled) return;
+        if (!m.getSource(SOURCE_ID)) {
+          m.addSource(SOURCE_ID, {
+            type: "geojson",
+            data: toFeatureCollection(markersRef.current) as never,
+          });
+          m.addLayer({
+            id: LAYER_ID,
+            type: "circle",
+            source: SOURCE_ID,
+            paint: {
+              "circle-radius": 8,
+              "circle-color": [
+                "match",
+                ["get", "availabilityStatus"],
+                "available",
+                "#16a34a",
+                "busy",
+                "#f97316",
+                "responding",
+                "#f97316",
+                "on_scene",
+                "#2563eb",
+                "#94a3b8",
+              ],
+              "circle-stroke-width": 2,
+              "circle-stroke-color": "#ffffff",
+            },
+          });
+        }
+        updateSource();
+
+        m.on("click", LAYER_ID, (e) => {
+          const features = e.features ?? [];
+          if (features.length === 0) return;
+          const props = features[0].properties as Record<string, unknown>;
+          const geometry = features[0].geometry as unknown as {
+            coordinates: [number, number];
+          };
+          const name = escapeHtml(String(props.displayName ?? "Responder"));
+          const status = escapeHtml(String(props.availabilityStatus ?? ""));
+          const distance =
+            typeof props.distance === "number" && Number.isFinite(props.distance)
+              ? `<br/>~${(props.distance / 1000).toFixed(1)} km away (approx.)`
+              : "";
+          const demo = props.isDemo === true ? "<br/>(demo)" : "";
+          popup?.remove();
+          popup = new maplibregl.Popup({ offset: 12 })
+            .setLngLat(geometry.coordinates)
+            .setHTML(
+              `<strong>${name}</strong><br/>Status: ${status}${distance}${demo}` +
                 `<br/><span style="color:#475569;font-size:11px">Approximate location</span>`,
-            ),
-          )
-          .addTo(m);
+            )
+            .addTo(m);
+        });
+
+        m.on("mouseenter", LAYER_ID, () => {
+          m.getCanvas().style.cursor = "pointer";
+        });
+        m.on("mouseleave", LAYER_ID, () => {
+          m.getCanvas().style.cursor = "";
+        });
+      };
+
+      if (m.isStyleLoaded()) {
+        initLayers();
+      } else {
+        m.once("load", initLayers);
       }
     })();
 
     return () => {
       cancelled = true;
+      updateRef.current = null;
+      popup?.remove();
       map?.remove();
     };
+  }, []);
+
+  // Push polled marker updates into the existing source (no remount).
+  useEffect(() => {
+    updateRef.current?.();
   }, [markers]);
 
   return (
@@ -110,9 +215,10 @@ export function ResponderMap({ markers }: { markers: PublicResponderMarker[] }) 
         </li>
       </ul>
       <p className="mt-2 text-xs text-slate-500">
-        Positions are privacy-offset approximations. In an emergency call
-        police {EMERGENCY_NUMBERS.police}, fire {EMERGENCY_NUMBERS.fire}, or
-        medical {EMERGENCY_NUMBERS.ambulance} first.
+        Positions are privacy-offset approximations. Responders only — incidents
+        are never shown on the public map. In an emergency call police{" "}
+        {EMERGENCY_NUMBERS.police}, fire {EMERGENCY_NUMBERS.fire}, or medical{" "}
+        {EMERGENCY_NUMBERS.ambulance} first.
       </p>
     </div>
   );

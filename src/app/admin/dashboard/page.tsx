@@ -23,8 +23,11 @@ export default function AdminDashboardPage() {
       .catch(() => setMe(null));
   }, []);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["admin-summary"],
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     queryFn: async () => {
       const res = await fetch("/api/v1/admin/summary");
       const json = (await res.json()) as {
@@ -59,6 +62,13 @@ export default function AdminDashboardPage() {
         <h1 className="text-2xl font-bold">Operations dashboard</h1>
         {me?.primaryLabel && <Badge tone="navy">{me.primaryLabel} · control center</Badge>}
       </div>
+      <p className="text-xs text-slate-500">
+        <Badge tone="green">● Live</Badge>
+        <span className="ml-2">
+          {isFetching ? "Updating…" : "Counts update every 30s"}
+          {dataUpdatedAt ? ` · ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}
+        </span>
+      </p>
       <p className="text-sm text-slate-600">
         {me?.primaryRole === "verification_officer"
           ? "Your queue: responder verification. Incident moderation, exports, and role changes need an administrator."

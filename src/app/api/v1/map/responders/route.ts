@@ -13,11 +13,19 @@ import type { PublicResponderMarker } from "@/lib/types";
  */
 export async function GET() {
   if (!env.isSupabaseConfigured) {
-    return ok({ markers: [] as PublicResponderMarker[], demo: true });
+    return ok({
+      markers: [] as PublicResponderMarker[],
+      demo: true,
+      serverTime: new Date().toISOString(),
+    });
   }
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("public_responder_markers");
-  if (error || !data) return ok({ markers: [] as PublicResponderMarker[] });
+  if (error || !data)
+    return ok({
+      markers: [] as PublicResponderMarker[],
+      serverTime: new Date().toISOString(),
+    });
 
   const markers: PublicResponderMarker[] = [];
   for (const r of data as Record<string, unknown>[]) {
@@ -35,5 +43,5 @@ export async function GET() {
     });
   }
 
-  return ok({ markers });
+  return ok({ markers, serverTime: new Date().toISOString() });
 }

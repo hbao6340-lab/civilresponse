@@ -15,10 +15,16 @@ const DEMO_MARKERS: PublicResponderMarker[] = [
   { id: "demo-5", displayName: "Volunteer — Gò Vấp (demo)", lat: 10.8385, lng: 106.6534, availabilityStatus: "offline", qualifications: ["traffic"], isDemo: true },
 ];
 
+/**
+ * Public responder map — responders only (never incidents), live-updating.
+ * Polls the privacy-protected approx feed every 15s; pauses when the tab is
+ * hidden and refetches on window focus. Incident locations are never fetched
+ * or rendered here.
+ */
 export default function MapPage() {
   const [filter, setFilter] = useState<string>("all");
 
-  const { data, isError } = useQuery({
+  const { data, isError, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["public-responders"],
     queryFn: async (): Promise<PublicResponderMarker[]> => {
       const res = await fetch("/api/v1/map/responders");
@@ -26,7 +32,9 @@ export default function MapPage() {
       const json = (await res.json()) as { data: { markers: PublicResponderMarker[] } };
       return json.data.markers;
     },
-    staleTime: 30_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 
   const markers = useMemo(() => {
@@ -49,6 +57,16 @@ export default function MapPage() {
           <p className="mt-1 max-w-2xl text-slate-600">
             Verified volunteers who opted into public visibility. Positions are
             approximate and privacy-protected; exact live GPS is never public.
+            Responders only — incidents are never shown here.
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            <Badge tone="green">● Live</Badge>{" "}
+            <span className="ml-2">
+              {isFetching ? "Updating…" : "Updates every 15s"}
+              {dataUpdatedAt
+                ? ` · last updated ${new Date(dataUpdatedAt).toLocaleTimeString()}`
+                : ""}
+            </span>
           </p>
         </div>
         {usingDemo && (

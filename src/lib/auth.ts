@@ -87,6 +87,21 @@ export function canManageSettings(user: SessionUser | null): boolean {
   return isSuperAdmin(user);
 }
 
+/**
+ * Live incident-map viewers: privileged staff (verification_officer /
+ * administrator / super_admin) plus verified responders. Pending responders
+ * and citizens do not see incident locations.
+ */
+export function canViewIncidentMap(
+  user: SessionUser | null,
+  responderVerificationStatus?: string | null,
+): boolean {
+  if (!user) return false;
+  if (isPrivileged(user)) return true;
+  if (isResponder(user) && responderVerificationStatus === "verified") return true;
+  return false;
+}
+
 export function requiresMfa(user: SessionUser | null): boolean {
   return hasRole(user, MFA_REQUIRED_ROLES);
 }

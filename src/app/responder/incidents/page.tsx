@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { formatTimestamp } from "@/lib/utils";
 
 export default function ResponderIncidentsPage() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, dataUpdatedAt, isFetching, refetch } = useQuery({
     queryKey: ["responder-incidents"],
     queryFn: async () => {
       const res = await fetch("/api/v1/assignments/mine");
@@ -29,6 +29,9 @@ export default function ResponderIncidentsPage() {
       if (!res.ok || !json.success) throw new Error(json.error?.message ?? "Failed");
       return json.data?.assignments ?? [];
     },
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 
   const act = async (id: string, action: "accept" | "decline") => {
@@ -37,13 +40,22 @@ export default function ResponderIncidentsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
+    void refetch();
   };
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">My incidents</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-bold">My incidents</h1>
+        <p className="text-xs text-slate-500">
+          {isFetching ? "Updating…" : "Live · updates every 10s"}
+          {dataUpdatedAt
+            ? ` · ${new Date(dataUpdatedAt).toLocaleTimeString()}`
+            : ""}
+        </p>
+      </div>
       <Card>
-        <CardHeader title="Assigned & nearby incidents" description="Accept or decline promptly. Never accept beyond your training." />
+        <CardHeader title="Assigned & nearby incidents" description="Accept or decline promptly. Never accept beyond your training. Refreshes live as incidents are dealt with." />
         <CardBody>
           {isLoading && <p className="text-sm text-slate-500">Loading…</p>}
           {error && <p className="text-sm text-red-700">{(error as Error).message}</p>}

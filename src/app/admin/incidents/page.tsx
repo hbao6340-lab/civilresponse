@@ -34,8 +34,11 @@ export default function AdminIncidentsPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["admin-incidents"],
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     queryFn: async (): Promise<IncidentRow[]> => {
       const res = await fetch("/api/v1/admin/incidents");
       const json = (await res.json()) as {
@@ -83,7 +86,13 @@ export default function AdminIncidentsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Incidents</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-bold">Incidents</h1>
+        <p className="text-xs text-slate-500">
+          {isFetching ? "Updating…" : "Live · updates every 15s"}
+          {dataUpdatedAt ? ` · ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}
+        </p>
+      </div>
       <Card>
         <CardHeader
           title="Incident management"

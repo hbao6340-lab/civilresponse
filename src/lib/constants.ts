@@ -48,6 +48,24 @@ export const INCIDENT_STATUSES = [
   "FALSE_REPORT",
 ] as const;
 
+/** Incident statuses still requiring response (dashboard "available" set). */
+export const ACTIVE_INCIDENT_STATUSES: readonly (typeof INCIDENT_STATUSES)[number][] = [
+  "NEW",
+  "PENDING_REVIEW",
+  "VERIFIED",
+  "NOTIFYING",
+  "ACCEPTED",
+  "EN_ROUTE",
+  "ON_SCENE",
+];
+
+/** Closed incident statuses — hidden from available-incident feeds. */
+export const CLOSED_INCIDENT_STATUSES: readonly (typeof INCIDENT_STATUSES)[number][] = [
+  "RESOLVED",
+  "CANCELLED",
+  "FALSE_REPORT",
+];
+
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 
 export const USER_ROLES = [

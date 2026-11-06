@@ -1,29 +1,21 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { ResponderMap } from "@/components/map/responder-map";
-import type { PublicResponderMarker } from "@/lib/types";
+import { OperationsMapView } from "@/components/map/operations-map-view";
 
 export default function AdminMapPage() {
-  const { data } = useQuery({
-    queryKey: ["admin-map"],
-    queryFn: async (): Promise<PublicResponderMarker[]> => {
-      const res = await fetch("/api/v1/map/responders");
-      const json = (await res.json()) as {
-        data: { markers: PublicResponderMarker[] };
-      };
-      return json.data.markers;
-    },
-  });
-
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Operations map</h1>
-      <p className="text-sm text-slate-600">
-        Authorised operational view. Exact coordinates remain server-side;
-        markers here are the same privacy-protected feed as the public map.
-      </p>
-      <ResponderMap markers={data ?? []} />
+      <div>
+        <h1 className="text-2xl font-bold">Operations map</h1>
+        <p className="text-sm text-slate-600">
+          All available (active) incidents plus approximate responder locations.
+          Incidents pop in when reported and drop off when dealt with
+          (resolved / cancelled / false report). Incidents use exact
+          operational coordinates (authorised view only); responder positions
+          remain privacy-protected approximations.
+        </p>
+      </div>
+      <OperationsMapView />
     </div>
   );
 }

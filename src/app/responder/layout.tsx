@@ -16,6 +16,7 @@ function responderLinks(opts: {
   verified: boolean;
   hasResponderRole: boolean;
 }) {
+  const canSeeIncidentMap = opts.privileged || opts.verified;
   const base = [
     { href: "/responder/dashboard", label: "Dashboard" },
     { href: "/responder/profile", label: "Profile" },
@@ -24,6 +25,9 @@ function responderLinks(opts: {
       ? [{ href: "/responder/verification", label: "Verification" }]
       : []),
     { href: "/responder/incidents", label: "Incidents" },
+    ...(canSeeIncidentMap
+      ? [{ href: "/responder/map", label: "Map" }]
+      : []),
     { href: "/responder/settings", label: "Settings" },
   ];
   if (opts.privileged) {
@@ -32,7 +36,8 @@ function responderLinks(opts: {
       { href: "/admin/dashboard", label: "Control center" },
     ];
   }
-  // Pending responders should land on verification first.
+  // Pending responders should land on verification first (no incident map
+  // until verified — incident locations are restricted to verified + staff).
   if (!opts.verified && opts.hasResponderRole) {
     return [
       { href: "/responder/verification", label: "Verification" },
