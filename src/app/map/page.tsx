@@ -26,11 +26,21 @@ export default function MapPage() {
 
   const { data, isError, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["public-responders"],
-    queryFn: async (): Promise<PublicResponderMarker[]> => {
+    queryFn: async (): Promise<{
+      markers: PublicResponderMarker[];
+      demo: boolean;
+    }> => {
       const res = await fetch("/api/v1/map/responders");
       if (!res.ok) throw new Error("Failed to load responders");
-      const json = (await res.json()) as { data: { markers: PublicResponderMarker[] } };
-      return json.data.markers;
+      const json = (await res.json()) as {
+        data: { markers: PublicResponderMarker[]; demo?: boolean };
+      };
+      // demo:true only when backend not configured (dev placeholder).
+      // Configured production with [] is live-empty (no fake markers).
+      return {
+        markers: json.data.markers ?? [],
+        demo: json.data.demo === true,
+      };
     },
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
@@ -38,14 +48,16 @@ export default function MapPage() {
   });
 
   const markers = useMemo(() => {
-    const live = data ?? [];
-    const source = live.length > 0 ? live : DEMO_MARKERS;
+    const live = data?.markers ?? [];
+    // Demo simulation only when the API explicitly says the backend is not
+    // configured; live-empty stays empty (no fake markers in production).
+    const source = data?.demo ? DEMO_MARKERS : live;
     return filter === "all"
       ? source
       : source.filter((m) => m.availabilityStatus === filter);
   }, [data, filter]);
 
-  const usingDemo = !data || data.length === 0;
+  const usingDemo = data?.demo === true;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10">
@@ -94,10 +106,19 @@ export default function MapPage() {
         ))}
       </div>
 
+      {!usingDemo && data && (data.markers?.length ?? 0) === 0 && !isError && (
+        <p className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+          No live responders on duty right now. Responder markers appear here
+          when verified responders go on duty with location sharing. In an
+          emergency, call 113 / 114 / 115.
+        </p>
+      )}
+
       {isError && (
         <p className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-          Live responder feed is unavailable right now. Showing labelled demo
-          markers. In an emergency, call 113 / 114 / 115.
+          Live responder feed is unavailable right now. Responder markers are
+          hidden until the live feed recovers. In an emergency, call 113 / 114 /
+          115.
         </p>
       )}
 

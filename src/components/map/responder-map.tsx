@@ -8,14 +8,12 @@ import { env } from "@/lib/env";
 /**
  * Public responder map — responders only (never incidents).
  *
- * Live-update friendly: the MapLibre map is created once; subsequent
- * `markers` prop changes update the GeoJSON source in place (no remount),
- * so polling feeds animate without losing pan/zoom. Coordinates are the
- * privacy-protected approximations from /api/v1/map/responders.
+ * Live-update friendly: the MapLibre map instance is created once; polled
+ * `markers` prop changes are applied in place (markers added / moved /
+ * removed) without remounting, so pan/zoom is preserved. Uses the Marker
+ * API (DOM elements) which reliably renders privacy-protected approx
+ * positions from /api/v1/map/responders.
  */
-
-const SOURCE_ID = "responders-src";
-const LAYER_ID = "responders-circle";
 
 function escapeHtml(value: string): string {
   return value
@@ -26,47 +24,61 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function toFeatureCollection(markers: PublicResponderMarker[]) {
-  return {
-    type: "FeatureCollection" as const,
-    features: markers
-      .filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lng))
-      .map((m) => ({
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [m.lng, m.lat] },
-        properties: {
-          id: m.id,
-          displayName: m.displayName,
-          availabilityStatus: m.availabilityStatus,
-          distance: m.distanceMeters,
-          isDemo: m.isDemo ? true : false,
-        },
-      })),
-  };
+function colorFor(status: string): string {
+  if (status === "available") return "#16a34a";
+  if (status === "busy" || status === "responding") return "#f97316";
+  if (status === "on_scene") return "#2563eb";
+  return "#94a3b8";
+}
+
+function popupHtml(marker: PublicResponderMarker): string {
+  const name = escapeHtml(marker.displayName || "Responder");
+  const status = escapeHtml(marker.availabilityStatus || "");
+  const distance =
+    typeof marker.distanceMeters === "number" &&
+    Number.isFinite(marker.distanceMeters)
+      ? `<br/>~${(marker.distanceMeters / 1000).toFixed(1)} km away (approx.)`
+      : "";
+  const demo = marker.isDemo ? "<br/>(demo)" : "";
+  return (
+    `<strong>${name}</strong><br/>Status: ${status}${distance}${demo}` +
+    `<br/><span style="color:#475569;font-size:11px">Approximate location</span>`
+  );
+}
+
+function markerElement(marker: PublicResponderMarker): HTMLDivElement {
+  const el = document.createElement("div");
+  el.style.cssText = `width:16px;height:16px;border-radius:9999px;background:${colorFor(marker.availabilityStatus)};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;`;
+  el.title = marker.displayName;
+  return el;
 }
 
 export function ResponderMap({ markers }: { markers: PublicResponderMarker[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const markersRef = useRef(markers);
-  const updateRef = useRef<(() => void) | null>(null);
+  const mapRef = useRef<import("maplibre-gl").Map | null>(null);
+  const libRef = useRef<typeof import("maplibre-gl") | null>(null);
+  const markerRefs = useRef(
+    new Map<string, import("maplibre-gl").Marker>(),
+  );
+  const syncRef = useRef<(() => void) | null>(null);
 
   // Keep the latest markers available to the long-lived map closure.
   useEffect(() => {
     markersRef.current = markers;
   }, [markers]);
 
-  // Create the map once; layers initialise on style load, then updates flow
-  // through the second effect without remounting.
+  // Create the map once.
   useEffect(() => {
-    let map: import("maplibre-gl").Map | null = null;
-    let popup: import("maplibre-gl").Popup | null = null;
     let cancelled = false;
+    const markersMap = markerRefs.current;
 
     (async () => {
       const maplibregl = await import("maplibre-gl");
       if (cancelled || !ref.current) return;
+      libRef.current = maplibregl;
 
-      map = new maplibregl.Map({
+      const map = new maplibregl.Map({
         container: ref.current,
         style: {
           version: 8,
@@ -83,11 +95,15 @@ export function ResponderMap({ markers }: { markers: PublicResponderMarker[] }) 
         center: [SITE.hcmc.lng, SITE.hcmc.lat],
         zoom: SITE.hcmc.zoom,
       });
+      mapRef.current = map;
+      if (cancelled) {
+        map.remove();
+        mapRef.current = null;
+        return;
+      }
 
-      if (cancelled) return;
-      const m: import("maplibre-gl").Map = map;
-      m.addControl(new maplibregl.NavigationControl(), "top-right");
-      m.addControl(
+      map.addControl(new maplibregl.NavigationControl(), "top-right");
+      map.addControl(
         new maplibregl.GeolocateControl({
           positionOptions: { enableHighAccuracy: true },
           trackUserLocation: true,
@@ -95,97 +111,60 @@ export function ResponderMap({ markers }: { markers: PublicResponderMarker[] }) 
         "top-right",
       );
 
-      const updateSource = () => {
-        const source = m.getSource(SOURCE_ID) as
-          | import("maplibre-gl").GeoJSONSource
-          | undefined;
-        source?.setData(toFeatureCollection(markersRef.current) as never);
-      };
-      updateRef.current = updateSource;
-
-      const initLayers = () => {
-        if (cancelled) return;
-        if (!m.getSource(SOURCE_ID)) {
-          m.addSource(SOURCE_ID, {
-            type: "geojson",
-            data: toFeatureCollection(markersRef.current) as never,
-          });
-          m.addLayer({
-            id: LAYER_ID,
-            type: "circle",
-            source: SOURCE_ID,
-            paint: {
-              "circle-radius": 8,
-              "circle-color": [
-                "match",
-                ["get", "availabilityStatus"],
-                "available",
-                "#16a34a",
-                "busy",
-                "#f97316",
-                "responding",
-                "#f97316",
-                "on_scene",
-                "#2563eb",
-                "#94a3b8",
-              ],
-              "circle-stroke-width": 2,
-              "circle-stroke-color": "#ffffff",
-            },
-          });
+      const sync = () => {
+        const m = mapRef.current;
+        const lib = libRef.current;
+        if (!m || !lib) return;
+        const current = markersRef.current.filter(
+          (mk) => Number.isFinite(mk.lat) && Number.isFinite(mk.lng),
+        );
+        const seen = new Set<string>();
+        for (const marker of current) {
+          seen.add(marker.id);
+          const existing = markersMap.get(marker.id);
+          if (existing) {
+            existing.setLngLat([marker.lng, marker.lat]);
+            const el = existing.getElement();
+            if (el) {
+              el.style.background = colorFor(marker.availabilityStatus);
+              el.title = marker.displayName;
+            }
+            existing.setPopup(
+              new lib.Popup({ offset: 12 }).setHTML(popupHtml(marker)),
+            );
+          } else {
+            const created = new lib.Marker({ element: markerElement(marker) })
+              .setLngLat([marker.lng, marker.lat])
+              .setPopup(new lib.Popup({ offset: 12 }).setHTML(popupHtml(marker)))
+              .addTo(m);
+            markersMap.set(marker.id, created);
+          }
         }
-        updateSource();
-
-        m.on("click", LAYER_ID, (e) => {
-          const features = e.features ?? [];
-          if (features.length === 0) return;
-          const props = features[0].properties as Record<string, unknown>;
-          const geometry = features[0].geometry as unknown as {
-            coordinates: [number, number];
-          };
-          const name = escapeHtml(String(props.displayName ?? "Responder"));
-          const status = escapeHtml(String(props.availabilityStatus ?? ""));
-          const distance =
-            typeof props.distance === "number" && Number.isFinite(props.distance)
-              ? `<br/>~${(props.distance / 1000).toFixed(1)} km away (approx.)`
-              : "";
-          const demo = props.isDemo === true ? "<br/>(demo)" : "";
-          popup?.remove();
-          popup = new maplibregl.Popup({ offset: 12 })
-            .setLngLat(geometry.coordinates)
-            .setHTML(
-              `<strong>${name}</strong><br/>Status: ${status}${distance}${demo}` +
-                `<br/><span style="color:#475569;font-size:11px">Approximate location</span>`,
-            )
-            .addTo(m);
-        });
-
-        m.on("mouseenter", LAYER_ID, () => {
-          m.getCanvas().style.cursor = "pointer";
-        });
-        m.on("mouseleave", LAYER_ID, () => {
-          m.getCanvas().style.cursor = "";
-        });
+        for (const [id, mk] of markersMap.entries()) {
+          if (!seen.has(id)) {
+            mk.remove();
+            markersMap.delete(id);
+          }
+        }
       };
-
-      if (m.isStyleLoaded()) {
-        initLayers();
-      } else {
-        m.once("load", initLayers);
-      }
+      syncRef.current = sync;
+      sync();
     })();
 
     return () => {
       cancelled = true;
-      updateRef.current = null;
-      popup?.remove();
-      map?.remove();
+      syncRef.current = null;
+      for (const mk of markersMap.values()) mk.remove();
+      markersMap.clear();
+      mapRef.current?.remove();
+      mapRef.current = null;
+      libRef.current = null;
     };
   }, []);
 
-  // Push polled marker updates into the existing source (no remount).
+  // Push polled updates into the live markers (no remount).
   useEffect(() => {
-    updateRef.current?.();
+    syncRef.current?.();
   }, [markers]);
 
   return (

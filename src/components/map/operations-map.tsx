@@ -15,17 +15,12 @@ import { env } from "@/lib/env";
  * operational coordinates from /api/v1/map/incidents; responders use the
  * privacy-protected approximations from /api/v1/map/responders.
  *
- * Live-update friendly: the MapLibre map is created once; polled prop changes
- * update both GeoJSON sources in place (no remount, pan/zoom preserved).
- * When an incident is dealt with (RESOLVED/CANCELLED/FALSE_REPORT) it drops
- * off the available feed on the next poll; new incidents pop in on the next
- * poll.
+ * Live-update friendly: the MapLibre map instance is created once; polled
+ * prop changes are applied in place (markers added / moved / removed)
+ * without remounting, so pan/zoom is preserved. When an incident is dealt
+ * with (RESOLVED/CANCELLED/FALSE_REPORT) it drops off the available feed
+ * on the next poll; new incidents pop in on the next poll.
  */
-
-const RESPONDER_SOURCE = "op-responders";
-const RESPONDER_LAYER = "op-responders-circle";
-const INCIDENT_SOURCE = "op-incidents";
-const INCIDENT_LAYER = "op-incidents-circle";
 
 function escapeHtml(value: string): string {
   return value
@@ -36,44 +31,44 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function responderCollection(markers: PublicResponderMarker[]) {
-  return {
-    type: "FeatureCollection" as const,
-    features: markers
-      .filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lng))
-      .map((m) => ({
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [m.lng, m.lat] },
-        properties: {
-          id: m.id,
-          displayName: m.displayName,
-          availabilityStatus: m.availabilityStatus,
-          isDemo: m.isDemo ? true : false,
-        },
-      })),
-  };
+function responderColor(status: string): string {
+  if (status === "available") return "#16a34a";
+  if (status === "busy" || status === "responding") return "#f97316";
+  if (status === "on_scene") return "#2563eb";
+  return "#94a3b8";
 }
 
-function incidentCollection(incidents: IncidentMarker[]) {
-  return {
-    type: "FeatureCollection" as const,
-    features: incidents
-      .filter((i) => Number.isFinite(i.lat) && Number.isFinite(i.lng))
-      .map((i) => ({
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [i.lng, i.lat] },
-        properties: {
-          id: i.id,
-          publicReference: i.publicReference,
-          category: i.category,
-          status: i.status,
-          priority: i.priority,
-          address: i.address ?? "",
-          createdAt: i.createdAt,
-          isDemo: i.isDemo ? true : false,
-        },
-      })),
-  };
+function incidentColor(priority: string): string {
+  if (priority === "critical") return "#dc2626";
+  if (priority === "high") return "#ea580c";
+  if (priority === "medium") return "#d97706";
+  return "#64748b";
+}
+
+function responderPopup(marker: PublicResponderMarker): string {
+  const name = escapeHtml(marker.displayName || "Responder");
+  const status = escapeHtml(marker.availabilityStatus || "");
+  const demo = marker.isDemo ? "<br/>(demo)" : "";
+  return (
+    `<strong>${name}</strong><br/>Status: ${status}${demo}` +
+    `<br/><span style="color:#475569;font-size:11px">Approximate location</span>`
+  );
+}
+
+function incidentPopup(marker: IncidentMarker): string {
+  const ref = escapeHtml(marker.publicReference || "Incident");
+  const category = escapeHtml((marker.category || "").replaceAll("_", " "));
+  const status = escapeHtml((marker.status || "").replaceAll("_", " "));
+  const priority = escapeHtml(marker.priority || "");
+  const address = escapeHtml(marker.address || "");
+  const demo = marker.isDemo ? "<br/>(demo)" : "";
+  return (
+    `<strong>${ref}</strong> · ${category}` +
+    `<br/>Status: ${status} · Priority: ${priority}` +
+    (address ? `<br/>${address}` : "") +
+    demo +
+    `<br/><span style="color:#475569;font-size:11px">Incident — authorised view</span>`
+  );
 }
 
 export function OperationsMap({
@@ -92,7 +87,11 @@ export function OperationsMap({
   const incidentsRef = useRef(incidents);
   const showRespondersRef = useRef(showResponders);
   const showIncidentsRef = useRef(showIncidents);
-  const updateRef = useRef<(() => void) | null>(null);
+  const mapRef = useRef<import("maplibre-gl").Map | null>(null);
+  const libRef = useRef<typeof import("maplibre-gl") | null>(null);
+  const responderMarkers = useRef(new Map<string, import("maplibre-gl").Marker>());
+  const incidentMarkers = useRef(new Map<string, import("maplibre-gl").Marker>());
+  const syncRef = useRef<(() => void) | null>(null);
 
   // Keep the latest props available to the long-lived map closure.
   useEffect(() => {
@@ -108,16 +107,18 @@ export function OperationsMap({
     showIncidentsRef.current = showIncidents;
   }, [showIncidents]);
 
+  // Create the map once.
   useEffect(() => {
-    let map: import("maplibre-gl").Map | null = null;
-    let popup: import("maplibre-gl").Popup | null = null;
     let cancelled = false;
+    const responderMap = responderMarkers.current;
+    const incidentMap = incidentMarkers.current;
 
     (async () => {
       const maplibregl = await import("maplibre-gl");
       if (cancelled || !ref.current) return;
+      libRef.current = maplibregl;
 
-      map = new maplibregl.Map({
+      const map = new maplibregl.Map({
         container: ref.current,
         style: {
           version: 8,
@@ -134,11 +135,15 @@ export function OperationsMap({
         center: [SITE.hcmc.lng, SITE.hcmc.lat],
         zoom: SITE.hcmc.zoom,
       });
+      mapRef.current = map;
+      if (cancelled) {
+        map.remove();
+        mapRef.current = null;
+        return;
+      }
 
-      if (cancelled) return;
-      const m: import("maplibre-gl").Map = map;
-      m.addControl(new maplibregl.NavigationControl(), "top-right");
-      m.addControl(
+      map.addControl(new maplibregl.NavigationControl(), "top-right");
+      map.addControl(
         new maplibregl.GeolocateControl({
           positionOptions: { enableHighAccuracy: true },
           trackUserLocation: true,
@@ -146,164 +151,113 @@ export function OperationsMap({
         "top-right",
       );
 
-      const updateSources = () => {
-        (m.getSource(RESPONDER_SOURCE) as
-          | import("maplibre-gl").GeoJSONSource
-          | undefined
-        )?.setData(
-          responderCollection(
-            showRespondersRef.current ? respondersRef.current : [],
-          ) as never,
-        );
-        (m.getSource(INCIDENT_SOURCE) as
-          | import("maplibre-gl").GeoJSONSource
-          | undefined
-        )?.setData(
-          incidentCollection(
-            showIncidentsRef.current ? incidentsRef.current : [],
-          ) as never,
-        );
-      };
-      updateRef.current = updateSources;
+      const sync = () => {
+        const m = mapRef.current;
+        const lib = libRef.current;
+        if (!m || !lib) return;
 
-      const initLayers = () => {
-        if (cancelled) return;
-        if (!m.getSource(RESPONDER_SOURCE)) {
-          m.addSource(RESPONDER_SOURCE, {
-            type: "geojson",
-            data: responderCollection(respondersRef.current) as never,
-          });
-          m.addLayer({
-            id: RESPONDER_LAYER,
-            type: "circle",
-            source: RESPONDER_SOURCE,
-            paint: {
-              "circle-radius": 7,
-              "circle-color": [
-                "match",
-                ["get", "availabilityStatus"],
-                "available",
-                "#16a34a",
-                "busy",
-                "#f97316",
-                "responding",
-                "#f97316",
-                "on_scene",
-                "#2563eb",
-                "#94a3b8",
-              ],
-              "circle-stroke-width": 2,
-              "circle-stroke-color": "#ffffff",
-            },
-          });
-        }
-        if (!m.getSource(INCIDENT_SOURCE)) {
-          m.addSource(INCIDENT_SOURCE, {
-            type: "geojson",
-            data: incidentCollection(incidentsRef.current) as never,
-          });
-          m.addLayer({
-            id: INCIDENT_LAYER,
-            type: "circle",
-            source: INCIDENT_SOURCE,
-            paint: {
-              "circle-radius": 11,
-              // Incidents are coloured by priority (triage).
-              "circle-color": [
-                "match",
-                ["get", "priority"],
-                "critical",
-                "#dc2626",
-                "high",
-                "#ea580c",
-                "medium",
-                "#d97706",
-                "#64748b",
-              ],
-              "circle-stroke-width": 2,
-              "circle-stroke-color": "#ffffff",
-            },
-          });
-        }
-        updateSources();
-
-        m.on("click", INCIDENT_LAYER, (e) => {
-          const features = e.features ?? [];
-          if (features.length === 0) return;
-          const props = features[0].properties as Record<string, unknown>;
-          const geometry = features[0].geometry as unknown as {
-            coordinates: [number, number];
-          };
-          const ref = escapeHtml(String(props.publicReference ?? "Incident"));
-          const status = escapeHtml(String(props.status ?? "").replaceAll("_", " "));
-          const priority = escapeHtml(String(props.priority ?? ""));
-          const category = escapeHtml(String(props.category ?? "").replaceAll("_", " "));
-          const address = escapeHtml(String(props.address ?? ""));
-          const demo = props.isDemo === true ? "<br/>(demo)" : "";
-          popup?.remove();
-          popup = new maplibregl.Popup({ offset: 12 })
-            .setLngLat(geometry.coordinates)
-            .setHTML(
-              `<strong>${ref}</strong> · ${category}` +
-                `<br/>Status: ${status} · Priority: ${priority}` +
-                (address ? `<br/>${address}` : "") +
-                demo +
-                `<br/><span style="color:#475569;font-size:11px">Incident — authorised view</span>`,
+        // Responders layer.
+        const showR = showRespondersRef.current;
+        const currentR = showR
+          ? respondersRef.current.filter(
+              (r) => Number.isFinite(r.lat) && Number.isFinite(r.lng),
             )
-            .addTo(m);
-        });
+          : [];
+        const seenR = new Set<string>();
+        for (const marker of currentR) {
+          seenR.add(marker.id);
+          const existing = responderMap.get(marker.id);
+          if (existing) {
+            existing.setLngLat([marker.lng, marker.lat]);
+            const el = existing.getElement();
+            if (el) {
+              el.style.background = responderColor(marker.availabilityStatus);
+              el.title = marker.displayName;
+            }
+            existing.setPopup(
+              new lib.Popup({ offset: 12 }).setHTML(responderPopup(marker)),
+            );
+          } else {
+            const el = document.createElement("div");
+            el.style.cssText = `width:16px;height:16px;border-radius:9999px;background:${responderColor(marker.availabilityStatus)};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;`;
+            el.title = marker.displayName;
+            const created = new lib.Marker({ element: el })
+              .setLngLat([marker.lng, marker.lat])
+              .setPopup(
+                new lib.Popup({ offset: 12 }).setHTML(responderPopup(marker)),
+              )
+              .addTo(m);
+            responderMap.set(marker.id, created);
+          }
+        }
+        for (const [id, mk] of responderMap.entries()) {
+          if (!seenR.has(id)) {
+            mk.remove();
+            responderMap.delete(id);
+          }
+        }
 
-        m.on("click", RESPONDER_LAYER, (e) => {
-          const features = e.features ?? [];
-          if (features.length === 0) return;
-          const props = features[0].properties as Record<string, unknown>;
-          const geometry = features[0].geometry as unknown as {
-            coordinates: [number, number];
-          };
-          const name = escapeHtml(String(props.displayName ?? "Responder"));
-          const status = escapeHtml(String(props.availabilityStatus ?? ""));
-          const demo = props.isDemo === true ? "<br/>(demo)" : "";
-          popup?.remove();
-          popup = new maplibregl.Popup({ offset: 12 })
-            .setLngLat(geometry.coordinates)
-            .setHTML(
-              `<strong>${name}</strong><br/>Status: ${status}${demo}` +
-                `<br/><span style="color:#475569;font-size:11px">Approximate location</span>`,
+        // Incidents layer (larger, priority-coloured).
+        const showI = showIncidentsRef.current;
+        const currentI = showI
+          ? incidentsRef.current.filter(
+              (i) => Number.isFinite(i.lat) && Number.isFinite(i.lng),
             )
-            .addTo(m);
-        });
-
-        m.on("mouseenter", INCIDENT_LAYER, () => {
-          m.getCanvas().style.cursor = "pointer";
-        });
-        m.on("mouseleave", INCIDENT_LAYER, () => {
-          m.getCanvas().style.cursor = "";
-        });
-        m.on("mouseenter", RESPONDER_LAYER, () => {
-          m.getCanvas().style.cursor = "pointer";
-        });
-        m.on("mouseleave", RESPONDER_LAYER, () => {
-          m.getCanvas().style.cursor = "";
-        });
+          : [];
+        const seenI = new Set<string>();
+        for (const marker of currentI) {
+          seenI.add(marker.id);
+          const existing = incidentMap.get(marker.id);
+          if (existing) {
+            existing.setLngLat([marker.lng, marker.lat]);
+            const el = existing.getElement();
+            if (el) {
+              el.style.background = incidentColor(marker.priority);
+              el.title = marker.publicReference;
+            }
+            existing.setPopup(
+              new lib.Popup({ offset: 12 }).setHTML(incidentPopup(marker)),
+            );
+          } else {
+            const el = document.createElement("div");
+            el.style.cssText = `width:20px;height:20px;border-radius:9999px;background:${incidentColor(marker.priority)};border:2px solid white;box-shadow:0 1px 6px rgba(0,0,0,.45);cursor:pointer;`;
+            el.title = marker.publicReference;
+            const created = new lib.Marker({ element: el })
+              .setLngLat([marker.lng, marker.lat])
+              .setPopup(
+                new lib.Popup({ offset: 12 }).setHTML(incidentPopup(marker)),
+              )
+              .addTo(m);
+            incidentMap.set(marker.id, created);
+          }
+        }
+        for (const [id, mk] of incidentMap.entries()) {
+          if (!seenI.has(id)) {
+            mk.remove();
+            incidentMap.delete(id);
+          }
+        }
       };
-
-      if (m.isStyleLoaded()) {
-        initLayers();
-      } else {
-        m.once("load", initLayers);
-      }
+      syncRef.current = sync;
+      sync();
     })();
 
     return () => {
       cancelled = true;
-      updateRef.current = null;
-      popup?.remove();
-      map?.remove();
+      syncRef.current = null;
+      for (const mk of responderMap.values()) mk.remove();
+      responderMap.clear();
+      for (const mk of incidentMap.values()) mk.remove();
+      incidentMap.clear();
+      mapRef.current?.remove();
+      mapRef.current = null;
+      libRef.current = null;
     };
   }, []);
 
+  // Push polled updates (and layer toggles) into the live markers.
   useEffect(() => {
-    updateRef.current?.();
+    syncRef.current?.();
   }, [responders, incidents, showResponders, showIncidents]);
 
   return (

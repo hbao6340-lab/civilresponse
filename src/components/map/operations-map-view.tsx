@@ -46,13 +46,21 @@ export function OperationsMapView() {
 
   const respondersQuery = useQuery({
     queryKey: ["operations-responders"],
-    queryFn: async (): Promise<PublicResponderMarker[]> => {
+    queryFn: async (): Promise<{
+      markers: PublicResponderMarker[];
+      demo: boolean;
+    }> => {
       const res = await fetch("/api/v1/map/responders");
       if (!res.ok) throw new Error("Responder feed unavailable");
       const json = (await res.json()) as {
-        data: { markers: PublicResponderMarker[] };
+        data: { markers: PublicResponderMarker[]; demo?: boolean };
       };
-      return json.data.markers;
+      // demo:true means backend not configured (dev placeholder). demo:false
+      // with [] means live-but-empty (no responders on duty) — never fake.
+      return {
+        markers: json.data.markers ?? [],
+        demo: json.data.demo === true,
+      };
     },
     refetchInterval: RESPONDER_POLL_MS,
     refetchIntervalInBackground: false,
@@ -61,7 +69,10 @@ export function OperationsMapView() {
 
   const incidentsQuery = useQuery({
     queryKey: ["operations-incidents"],
-    queryFn: async (): Promise<IncidentMarker[]> => {
+    queryFn: async (): Promise<{
+      incidents: IncidentMarker[];
+      demo: boolean;
+    }> => {
       const res = await fetch("/api/v1/map/incidents");
       const json = (await res.json()) as {
         success: boolean;
@@ -75,41 +86,47 @@ export function OperationsMapView() {
         );
       }
       if (res.status === 503) {
-        // Backend not configured: caller falls back to labelled demo data.
-        return [];
+        // Backend not configured (dev only): show labelled demo simulation.
+        // Configured production never hits this — live empty stays empty.
+        return { incidents: [], demo: true };
       }
       if (!res.ok || !json.success) {
         throw new Error(json.error?.message ?? "Incident feed unavailable");
       }
-      return json.data?.incidents ?? [];
+      return { incidents: json.data?.incidents ?? [], demo: false };
     },
     refetchInterval: INCIDENT_POLL_MS,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
 
+  const respondersFeed = respondersQuery.data;
+  const incidentsFeed = incidentsQuery.data;
   const responderLive = useMemo(
-    () => respondersQuery.data ?? [],
-    [respondersQuery.data],
+    () => respondersFeed?.markers ?? [],
+    [respondersFeed],
   );
   const incidentLive = useMemo(
-    () => incidentsQuery.data ?? [],
-    [incidentsQuery.data],
+    () => incidentsFeed?.incidents ?? [],
+    [incidentsFeed],
   );
-  const usingDemoResponders = responderLive.length === 0;
-  const usingDemoIncidents = incidentLive.length === 0 && !incidentsQuery.error;
+  // Demo simulation appears ONLY when the backend is not configured
+  // (responders demo:true / incidents 503). Configured production with an
+  // empty live feed shows empty (no fake markers).
+  const usingDemoResponders = respondersFeed?.demo === true;
+  const usingDemoIncidents = incidentsFeed?.demo === true;
   const responders = useMemo(
-    () => (responderLive.length > 0 ? responderLive : DEMO_RESPONDERS),
-    [responderLive],
+    () => (respondersFeed?.demo ? DEMO_RESPONDERS : responderLive),
+    [respondersFeed, responderLive],
   );
   // Unauthorized viewers (e.g. pending responders) see no incident markers —
   // never the demo set, which could be mistaken for real incidents.
   const incidents = useMemo(
     () => {
       if (incidentsQuery.error) return [] as IncidentMarker[];
-      return incidentLive.length > 0 ? incidentLive : DEMO_INCIDENTS;
+      return incidentsFeed?.demo ? DEMO_INCIDENTS : incidentLive;
     },
-    [incidentLive, incidentsQuery.error],
+    [incidentLive, incidentsQuery.error, incidentsFeed],
   );
 
   const activeIncidents = useMemo(() => {
@@ -175,7 +192,8 @@ export function OperationsMapView() {
           role="alert"
           className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
         >
-          Responder feed unavailable — showing labelled demo responders.
+          Responder feed unavailable. Responder markers are hidden until the
+          live feed recovers.
         </p>
       )}
 
